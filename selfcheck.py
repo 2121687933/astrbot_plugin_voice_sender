@@ -22,6 +22,7 @@ from voicekit import (  # noqa: E402
     TTSError,
     TTSClient,
     describe,
+    explain_error,
     fmt_size,
     normalize_base,
     sniff_ext,
@@ -155,6 +156,16 @@ def main() -> int:
         fake = root / "cache2"
         client2 = TTSClient(fake)
         check("缓存目录未创建也不炸", client2.cleanup_cache() is None)
+
+        print("[报错翻译]")
+        missing = b'{"detail":"RVC failed: {\\"code\\":\\"asset_missing\\",\\"message\\":\\"Converting needs HuBERT, RMVPE\\"}"}'
+        text = explain_error(502, missing)
+        check("缺模型能翻译成人话", "HuBERT" in text or "RVC 推理模型" in text, text)
+        no_tts = b'{"detail":"TTS failed: needs edge-tts: pip install rvc-next[tts]"}'
+        check("缺 edge-tts 能认出来", "edge-tts" in explain_error(502, no_tts))
+        plain = explain_error(500, b"internal error")
+        check("未知错误带状态码", "HTTP 500" in plain, plain)
+        check("非 JSON 也能兜住", isinstance(explain_error(400, b"<html>oops</html>"), str))
 
     print(f"\n结果：{OK} 通过，{FAIL} 失败")
     return 1 if FAIL else 0
