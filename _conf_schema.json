@@ -4,6 +4,41 @@
     "type": "bool",
     "default": true
   },
+  "auto_mode": {
+    "description": "自动语音：机器人每次回复都自动转成语音发出来，不用打指令。想临时改回文字，在聊天里发 /语音开关",
+    "type": "bool",
+    "default": true
+  },
+  "auto_scope": {
+    "description": "自动语音生效范围：all 私聊和群聊都发 / private 只私聊 / group 只群聊",
+    "type": "string",
+    "default": "all"
+  },
+  "auto_dual": {
+    "description": "自动语音时把原文字也一起发出来（关着表示只发语音）",
+    "type": "bool",
+    "default": false
+  },
+  "auto_min_chars": {
+    "description": "自动语音的最短字数，太短的话还是发文字",
+    "type": "int",
+    "default": 2
+  },
+  "auto_max_chars": {
+    "description": "自动语音的最长字数，超了就保持文字，0 表示不限制",
+    "type": "int",
+    "default": 150
+  },
+  "auto_admin_only": {
+    "description": "自动语音只对管理员的对话生效",
+    "type": "bool",
+    "default": false
+  },
+  "defer_to_tts_rvc": {
+    "description": "让位给 TTS-RVC：打开后，如果 TTS-RVC 插件也会转这条回复，这边就不重复转。默认关，两边各有各的开关更清楚",
+    "type": "bool",
+    "default": false
+  },
   "tts_service_url": {
     "description": "声音服务地址（tts-rvc-service）。留空会自动借用 TTS-RVC 插件的配置，再不行用 http://127.0.0.1:9880",
     "type": "string",
@@ -32,7 +67,9 @@
   "allow_dirs": {
     "description": "允许发送本地音频的目录（/发语音 用），插件自己的数据目录始终允许",
     "type": "list",
-    "default": ["/shared"]
+    "default": [
+      "/shared"
+    ]
   },
   "allow_url": {
     "description": "允许 /发语音 直接发 http 链接的音频",
