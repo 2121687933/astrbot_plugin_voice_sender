@@ -1,6 +1,7 @@
-"""会话状态（音色）和简单限流。
+"""会话状态（音色、语音开关）和简单限流。
 
-状态存在插件数据目录的 state.json 里，结构是 {会话 umo: {"voice": "音色 id"}}，
+状态存在插件数据目录的 state.json 里，结构是
+{会话 umo: {"voice": "音色 id", "mode": "voice" | "text"}}，
 原子写，坏了就当空的重来，不让它影响聊天。
 """
 
@@ -10,6 +11,10 @@ import json
 import os
 import time
 from pathlib import Path
+
+MODE_VOICE = "voice"
+MODE_TEXT = "text"
+MODES = (MODE_VOICE, MODE_TEXT)
 
 
 class SessionState:
@@ -47,6 +52,19 @@ class SessionState:
             slot["voice"] = voice_id
         else:
             slot.pop("voice", None)
+        self.save()
+
+    def get_mode(self, umo: str) -> str:
+        """会话的语音开关：voice 发语音、text 发文字、空串表示跟随全局配置。"""
+        mode = str(self._data.get(umo, {}).get("mode") or "")
+        return mode if mode in MODES else ""
+
+    def set_mode(self, umo: str, mode: str) -> None:
+        slot = self._data.setdefault(umo, {})
+        if mode in MODES:
+            slot["mode"] = mode
+        else:
+            slot.pop("mode", None)
         self.save()
 
 
