@@ -1,0 +1,67 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "type": "bool",
+    "default": true
+  },
+  "tts_service_url": {
+    "description": "声音服务地址（tts-rvc-service）。留空会自动借用 TTS-RVC 插件的配置，再不行用 http://127.0.0.1:9880",
+    "type": "string",
+    "default": ""
+  },
+  "default_voice_id": {
+    "description": "默认音色 id，留空表示用声音服务自己的默认音色",
+    "type": "string",
+    "default": ""
+  },
+  "admin_only": {
+    "description": "只允许管理员使用",
+    "type": "bool",
+    "default": true
+  },
+  "allowed_users": {
+    "description": "允许使用的用户 ID 白名单（admin_only 为真时，这些人也能用）",
+    "type": "list",
+    "default": []
+  },
+  "allowed_groups": {
+    "description": "允许使用的群号白名单",
+    "type": "list",
+    "default": []
+  },
+  "allow_dirs": {
+    "description": "允许发送本地音频的目录（/发语音 用），插件自己的数据目录始终允许",
+    "type": "list",
+    "default": ["/shared"]
+  },
+  "allow_url": {
+    "description": "允许 /发语音 直接发 http 链接的音频",
+    "type": "bool",
+    "default": false
+  },
+  "max_text_chars": {
+    "description": "单次合成的文字上限（字）",
+    "type": "int",
+    "default": 300
+  },
+  "max_file_mb": {
+    "description": "本地音频文件大小上限（MB），0 表示不限制",
+    "type": "float",
+    "default": 20.0
+  },
+  "timeout": {
+    "description": "合成请求超时（秒），RVC 推理慢的话调大一点",
+    "type": "float",
+    "default": 90.0
+  },
+  "cache": {
+    "description": "相同文字和音色复用已合成的音频",
+    "type": "bool",
+    "default": true
+  },
+  "rate_limit_per_min": {
+    "description": "每个会话每分钟最多合成几次，0 表示不限制",
+    "type": "int",
+    "default": 6
+  }
+}

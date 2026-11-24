@@ -1,0 +1,30 @@
+name: astrbot_plugin_voice_sender
+display_name: 语音发送
+short_desc: 把文字变成语音发到 QQ，音色跟 TTS-RVC 插件共用
+desc: |
+  想让机器人开口的时候，用这条命令就行：/说 你好呀。
+
+  插件本身不做 TTS，合成交给配套的 tts-rvc-service（和 TTS-RVC 语音回复插件是同一个服务），
+  所以音色、模型全都在那边配一次就够。没填服务地址时会自动去读 TTS-RVC 插件的配置，
+  两个插件装上就能联动，不用重复填。
+
+  常用命令：
+  /说 <文字> —— 合成语音发出来
+  /发语音 <路径或链接> —— 把现成的音频发成语音
+  /音色列表、/设置音色 <id> —— 查看和切换音色
+  /语音配置 —— 看服务地址和健康状态
+
+  权限默认只给管理员，可以按用户或群开白名单；合成失败会退回文字提示，不会吞消息；
+  连续失败会自动熔断几十秒，避免拖慢聊天。
+version: 1.0.0
+author: 大肥鱼
+repo: https://github.com/2121687933/astrbot_plugin_voice_sender
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+tags:
+  - 语音
+  - tts
+  - 工具
+social_link: ""
