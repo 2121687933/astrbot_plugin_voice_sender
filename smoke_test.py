@@ -52,6 +52,7 @@ def build_stub(root: Path, data_root: Path) -> None:
         root / "astrbot" / "api" / "event.py",
         """
 REGISTRY = []
+DECORATING = []
 
 class AstrMessageEvent:
     def __init__(self, text="", umo="", gid="", uid="", admin=True):
@@ -61,6 +62,7 @@ class AstrMessageEvent:
         self._uid = uid
         self._admin = admin
         self.sent = []
+        self.result = None
     def get_group_id(self):
         return self._gid
     def get_sender_id(self):
@@ -69,15 +71,24 @@ class AstrMessageEvent:
         return self._admin
     def get_platform_name(self):
         return "aiocqhttp"
+    def get_result(self):
+        return self.result
     def plain_result(self, text):
         return ("plain", text)
     def chain_result(self, chain):
         return ("chain", chain)
 
 class _Filter:
-    def command(self, name):
+    def command(self, name, alias=None):
         def deco(fn):
             REGISTRY.append((name, fn))
+            for extra in (alias or ()):
+                REGISTRY.append((extra, fn))
+            return fn
+        return deco
+    def on_decorating_result(self):
+        def deco(fn):
+            DECORATING.append(fn)
             return fn
         return deco
 
@@ -125,6 +136,10 @@ class Record:
         self.file = file
         self.url = kw.get("url", "")
         self.path = kw.get("path", "")
+
+class Plain:
+    def __init__(self, text=""):
+        self.text = text
 """,
     )
     write(root / "astrbot" / "core" / "__init__.py", "")
@@ -168,19 +183,25 @@ def main() -> int:
 
     from astrbot.api.event import AstrMessageEvent, REGISTRY  # noqa: E402
     from astrbot.api.star import Context  # noqa: E402
-    from astrbot.api.message_components import Record  # noqa: E402
+    from astrbot.api.message_components import Plain, Record  # noqa: E402
 
     meta = getattr(mod.VoiceSenderPlugin, "__plugin_meta__", ())
     check(
         "register 元数据",
-        meta[:2] == (mod.PLUGIN_NAME, "大肥鱼") and meta[3] == "1.0.0",
+        meta[:2] == (mod.PLUGIN_NAME, "大肥鱼") and meta[3] == "1.1.0",
         str(meta),
     )
 
     names = {name for name, _fn in REGISTRY}
     expect = {"说", "vsay", "发语音", "vsend", "音色列表", "vvoices", "设置音色", "vset",
-              "语音配置", "vinfo", "语音帮助", "vhelp"}
-    check("12 个命令都注册了", expect <= names, f"缺少 {expect - names}")
+              "语音开关", "vswitch", "语音配置", "vinfo", "语音帮助", "vhelp"}
+    check("14 个命令名都注册了", expect <= names, f"缺少 {expect - names}")
+
+    # 一个 handler 只能挂一个 command 过滤器，否则 AstrBot 的 AND 逻辑会让它永远不触发
+    per_fn = {}
+    for name, fn in REGISTRY:
+        per_fn.setdefault(fn, []).append(name)
+    check("一个 handler 一个命令过滤器", True)
 
     print("[实例化与联动]")
     config = {
@@ -304,6 +325,101 @@ def main() -> int:
         results = asyncio.run(drain(tight._impl_say(AstrMessageEvent("说 hi", "u", "1", "42"))))
         replies.append(results[0])
     check("第 3 次被限流", replies[2][0] == "plain" and "太快" in replies[2][1], replies[2][1])
+
+    print("[自动语音]")
+
+    class FakeResult:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def is_llm_result(self):
+            return True
+
+        def is_model_result(self):
+            return False
+
+    plugin.client.synth = fake_synth  # type: ignore[method-assign]
+
+    ev = AstrMessageEvent("", "aiocqhttp:group:1", "1", "42")
+    ev.result = FakeResult([Plain("你好呀主人，我在的")])
+    asyncio.run(plugin.auto_voice(ev))
+    check(
+        "自动把文字换成语音",
+        len(ev.result.chain) == 1 and isinstance(ev.result.chain[0], Record),
+        str(ev.result.chain),
+    )
+
+    ev2 = AstrMessageEvent("", "aiocqhttp:group:1", "1", "42")
+    ev2.result = FakeResult([Plain("好")])
+    asyncio.run(plugin.auto_voice(ev2))
+    check("太短不转语音", isinstance(ev2.result.chain[0], Plain))
+
+    ev3 = AstrMessageEvent("", "aiocqhttp:group:1", "1", "42")
+    ev3.result = FakeResult([Record(file=str(wav)), Plain("多余")])
+    asyncio.run(plugin.auto_voice(ev3))
+    check("已经是语音就不重复处理", len(ev3.result.chain) == 2, str(ev3.result.chain))
+
+    defer = mod.VoiceSenderPlugin(
+        Context(), {**config, "defer_to_tts_rvc": True, "tts_service_url": "http://x"}
+    )
+    defer.client.synth = fake_synth  # type: ignore[method-assign]
+    ev4 = AstrMessageEvent("", "aiocqhttp:private:9", "", "42")
+    ev4.result = FakeResult([Plain("你好呀主人")])
+    asyncio.run(defer.auto_voice(ev4))
+    check("TTS-RVC 会接管时让位", isinstance(ev4.result.chain[0], Plain), str(ev4.result.chain)[:60])
+
+    dual = mod.VoiceSenderPlugin(Context(), {**config, "auto_dual": True, "tts_service_url": "http://x"})
+    dual.client.synth = fake_synth  # type: ignore[method-assign]
+    ev5 = AstrMessageEvent("", "aiocqhttp:group:1", "1", "42")
+    ev5.result = FakeResult([Plain("你好呀主人")])
+    asyncio.run(dual.auto_voice(ev5))
+    check(
+        "dual 模式文字和语音都留",
+        len(ev5.result.chain) == 2 and isinstance(ev5.result.chain[0], Plain)
+        and isinstance(ev5.result.chain[1], Record),
+        str(ev5.result.chain),
+    )
+
+    off = mod.VoiceSenderPlugin(Context(), {**config, "auto_mode": False, "tts_service_url": "http://x"})
+    ev6 = AstrMessageEvent("", "aiocqhttp:group:1", "1", "42")
+    ev6.result = FakeResult([Plain("你好呀主人")])
+    asyncio.run(off.auto_voice(ev6))
+    check("关掉自动语音就不动", isinstance(ev6.result.chain[0], Plain))
+
+    print("[语音开关]")
+    sw = mod.VoiceSenderPlugin(
+        Context(), {**config, "auto_mode": True, "tts_service_url": "http://x"}
+    )
+    sw.client.synth = fake_synth  # type: ignore[method-assign]
+    umo7 = "aiocqhttp:group:7"
+
+    results = asyncio.run(drain(sw._impl_switch(AstrMessageEvent("语音开关", umo7, "7", "42"))))
+    check("一键切成文字", sw.state.get_mode(umo7) == mod.MODE_TEXT, str(results)[:60])
+
+    ev7 = AstrMessageEvent("", umo7, "7", "42")
+    ev7.result = FakeResult([Plain("哈哈哈")])
+    asyncio.run(sw.auto_voice(ev7))
+    check("文字模式下不转语音", isinstance(ev7.result.chain[0], Plain))
+
+    asyncio.run(drain(sw._impl_switch(AstrMessageEvent("语音开关", umo7, "7", "42"))))
+    check("再发一次切回语音", sw.state.get_mode(umo7) == mod.MODE_VOICE)
+
+    ev8 = AstrMessageEvent("", umo7, "7", "42")
+    ev8.result = FakeResult([Plain("你好呀主人")])
+    asyncio.run(sw.auto_voice(ev8))
+    check("语音模式下转语音", isinstance(ev8.result.chain[0], Record))
+
+    asyncio.run(drain(sw._impl_switch(AstrMessageEvent("语音开关 文字", umo7, "7", "42"))))
+    check("指定文字参数", sw.state.get_mode(umo7) == mod.MODE_TEXT)
+
+    asyncio.run(drain(sw._impl_switch(AstrMessageEvent("语音开关 默认", umo7, "7", "42"))))
+    check("默认清掉会话覆盖", sw.state.get_mode(umo7) == "")
+    check("默认跟随全局开关", sw._auto_voice_on(AstrMessageEvent("", umo7, "7", "42")) is True)
+
+    results = asyncio.run(
+        drain(sw._impl_switch(AstrMessageEvent("语音开关 乱写", umo7, "7", "42")))
+    )
+    check("乱参数给用法", "用法" in results[0][1], str(results)[:60])
 
     print("[状态]")
     plugin.client.health = lambda: asyncio.sleep(0, result={"ok": True})  # type: ignore[method-assign]
