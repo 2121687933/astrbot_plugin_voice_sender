@@ -2,7 +2,7 @@
 
 from .audio import AudioError, describe, fmt_size, sniff_ext, validate, wav_duration
 from .state import RateLimiter, SessionState
-from .tts import DEFAULT_TIMEOUT, TTSError, TTSClient, normalize_base
+from .tts import DEFAULT_TIMEOUT, TTSError, TTSClient, explain_error, normalize_base
 
 __all__ = [
     "AudioError",
@@ -12,6 +12,7 @@ __all__ = [
     "TTSError",
     "TTSClient",
     "describe",
+    "explain_error",
     "fmt_size",
     "normalize_base",
     "sniff_ext",
