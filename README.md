@@ -17,6 +17,14 @@ TTS-RVC 是「自动把每条回复都转成语音」，这个插件是「**你�
 
 ## 和 TTS-RVC 的联动
 
+这里说的联动不是「借个普通 TTS」：插件调用的是 TTS-RVC 那个服务上的 `/tts` 接口，服务端做的事是
+
+```
+文字 → edge-tts 干声 → RVC 换声 → wav
+```
+
+所以机器人发出去的那条语音，已经是**换过声**的，音色就是你在 TTS-RVC 模型库里导入的那个（比如 `xilian`）。插件本身不碰模型、不装 torch，只负责「把文字递过去」和「把 wav 发出去」。
+
 服务地址按这个顺序找，先找到的算数：
 
 1. 本插件配置里的 `tts_service_url`（想单独指定就填这里）
@@ -83,7 +91,21 @@ TTS-RVC 是「自动把每条回复都转成语音」，这个插件是「**你�
 
 **合成失败但服务是好的**
 
-看日志里服务返回的内容。文本太长、音色 ID 不存在、模型还没加载完，都会返回错误。
+看日志里服务返回的内容。文本太长、音色 ID 不存在、模型还没加载完，都会返回错误。插件会把服务端的报错翻译成人话，常见两种：
+
+提示「还缺 RVC 推理模型（HuBERT / RMVPE）」——服务端少了推理模型，在语音服务目录里跑：
+
+```bash
+runtime\.venv\Scripts\rvc-next.exe --data-dir runtime\rvc-data assets download hubert rmvpe --source hf-mirror
+```
+
+下完重启语音服务。
+
+提示「缺 edge-tts 这个依赖」——干声生成器没装：
+
+```bash
+runtime\.venv\Scripts\python.exe -m pip install edge-tts
+```
 
 **`/发语音` 提示路径不在允许目录**
 
