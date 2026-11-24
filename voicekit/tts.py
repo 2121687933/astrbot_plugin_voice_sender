@@ -37,6 +37,32 @@ def normalize_base(url: str) -> str:
     return base
 
 
+def explain_error(status: int, data: bytes) -> str:
+    """把服务端的报错翻译成一句人话。"""
+    text = data[:600].decode("utf-8", "replace").strip()
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+        if isinstance(detail, str) and detail.strip():
+            text = detail.strip()
+
+    low = text.lower()
+    if "asset_missing" in low or "hubert" in low or "rmvpe" in low:
+        return "声音服务还缺 RVC 推理模型（HuBERT / RMVPE），先去语音服务那边把模型下好"
+    if "tts_unavailable" in low or "edge-tts" in low:
+        return "声音服务缺 edge-tts 这个依赖，装一下：pip install edge-tts"
+    if "voice" in low and ("not found" in low or "unknown" in low or "不存在" in text):
+        return "这个音色声音服务里没有，用 /音色列表 看看有哪些"
+    if "connection" in low or "refused" in low:
+        return "连不上声音服务，确认一下服务是不是没开"
+    return f"声音服务返回 HTTP {status}：{text[:180]}"
+
+
 class TTSClient:
     def __init__(self, cache_dir: str | Path, *, timeout: float = DEFAULT_TIMEOUT, log=None):
         self.cache_dir = Path(cache_dir)
@@ -183,8 +209,7 @@ class TTSClient:
             raise TTSError(f"连不上声音服务（{exc}）") from exc
 
         if status != 200:
-            detail = data[:300].decode("utf-8", "replace")
-            error = TTSError(f"声音服务返回 HTTP {status}：{detail}")
+            error = TTSError(explain_error(status, data))
             if status >= 500:
                 self._mark_down(error)
             raise error
