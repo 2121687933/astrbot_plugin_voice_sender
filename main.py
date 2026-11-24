@@ -15,7 +15,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Record
+from astrbot.api.message_components import Plain, Record
 from astrbot.api.star import Context, Star
 
 try:  # AstrBot 各版本 register 的落点略有差异
@@ -34,6 +34,8 @@ except ImportError:  # pragma: no cover
     get_astrbot_data_path = None  # type: ignore[assignment]
 
 from .voicekit import (
+    MODE_TEXT,
+    MODE_VOICE,
     AudioError,
     RateLimiter,
     SessionState,
@@ -51,7 +53,14 @@ DETECT_INTERVAL = 30.0
 
 HELP_TEXT = """我把文字变成语音发出去，音色跟 TTS-RVC 插件共用。
 
-/说 <文字>         合成语音发出来（也能用 /vsay）
+默认是自动的：机器人每次回复都会转成语音，不用打指令。
+想切换成文字，就发 /语音开关；再发一次又切回语音。
+
+/语音开关          语音和文字之间来回切（也能用 /vswitch）
+/语音开关 语音     这个会话之后都发语音
+/语音开关 文字     这个会话之后都发文字
+/语音开关 默认     这个会话改回跟全局配置走
+/说 <文字>         单独合成一句发出来（也能用 /vsay）
 /发语音 <路径|URL>  把现成的音频发成语音（/vsend）
 /音色列表          看声音服务里有哪些音色（/vvoices）
 /设置音色 <id>      换当前会话的音色（/vset）
@@ -65,8 +74,8 @@ HELP_TEXT = """我把文字变成语音发出去，音色跟 TTS-RVC 插件共�
 @register(
     PLUGIN_NAME,
     "大肥鱼",
-    "把文字变成语音发到 QQ，音色跟 TTS-RVC 插件共用",
-    "1.0.0",
+    "让机器人开口说话，回复自动转语音，也能一句话切回文字",
+    "1.1.0",
 )
 class VoiceSenderPlugin(Star):
     def __init__(self, context: Context, config: dict | None = None):
@@ -274,6 +283,103 @@ class VoiceSenderPlugin(Star):
         except TypeError:  # 老版本只认 file
             return Record(file=path)
 
+    # ------------------------------------------------------ 自动语音（主动）
+
+    def _tts_rvc_session(self, event: AstrMessageEvent) -> dict | None:
+        """读 TTS-RVC 记的会话开关（没记过就返回 None，说明它按默认走）。"""
+        root = self._astrbot_data_root()
+        if root is None:
+            return None
+        path = root / "plugin_data" / TTS_RVC_PLUGIN / "sessions.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        entry = raw.get(self._umo(event))
+        if isinstance(entry, bool):
+            return {"enabled": entry}
+        return entry if isinstance(entry, dict) else None
+
+    def _tts_rvc_would_take(self, event: AstrMessageEvent) -> bool:
+        """TTS-RVC 会不会已经把这条回复转成语音；会就让位，别发两条。"""
+        cfg = self._read_tts_rvc_config()
+        if not cfg or not bool(cfg.get("enabled", True)):
+            return False
+        entry = self._tts_rvc_session(event)
+        if entry is not None and "enabled" in entry:
+            return bool(entry["enabled"])
+        if self._gid(event):
+            return bool(cfg.get("group_default", False))
+        return bool(cfg.get("private_only", True))
+
+    @filter.on_decorating_result()
+    async def auto_voice(self, event: AstrMessageEvent):
+        """机器人开口的时候，把这段回复换成语音发出去。"""
+        if not self._cfg("enabled", True):
+            return
+        mode = self.state.get_mode(self._umo(event))
+        if mode == MODE_TEXT:
+            return  # 这个会话明确要文字
+        if not mode and not self._cfg("auto_mode", True):
+            return
+        result = event.get_result()
+        if result is None or not getattr(result, "chain", None):
+            return
+        try:
+            if not (result.is_llm_result() or result.is_model_result()):
+                return
+        except Exception:  # noqa: BLE001 - 老版本没有这两个判断
+            return
+
+        chain = list(result.chain)
+        if any(isinstance(comp, Record) for comp in chain):
+            return  # 已经是语音了，不重复处理
+        text = "".join(
+            getattr(comp, "text", "")
+            for comp in chain
+            if isinstance(comp, Plain) and getattr(comp, "text", "")
+        ).strip()
+        if not text:
+            return
+
+        low = int(self._cfg("auto_min_chars", 2) or 0)
+        high = int(self._cfg("auto_max_chars", 150) or 0)
+        if len(text) < low:
+            return
+        if high > 0 and len(text) > high:
+            return
+
+        scope = str(self._cfg("auto_scope", "all") or "all").lower()
+        if scope == "private" and self._gid(event):
+            return
+        if scope == "group" and not self._gid(event):
+            return
+        if bool(self._cfg("auto_admin_only", False)) and not self._is_admin(event):
+            return
+        if bool(self._cfg("defer_to_tts_rvc", False)) and self._tts_rvc_would_take(event):
+            return
+
+        self.refresh_service()
+        if not self.client.configured:
+            return
+        try:
+            path = await self.client.synth(
+                text, self._voice_of(event), cache=bool(self._cfg("cache", True))
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败就保留文字，不影响聊天
+            logger.warning("[voice_sender] 自动语音失败，保留文字：%s", exc)
+            return
+
+        record = self._record(path)
+        others = [comp for comp in chain if not isinstance(comp, Plain)]
+        if bool(self._cfg("auto_dual", False)):
+            result.chain = [Plain(text), record, *others]
+        else:
+            result.chain = [record, *others]
+        logger.info("[voice_sender] 自动语音 %d 字 -> %s", len(text), path)
+
     async def _impl_say(self, event: AstrMessageEvent):
         error = self._guard(event)
         if error:
@@ -431,6 +537,7 @@ class VoiceSenderPlugin(Star):
             lines.append(f"音色：{len(voices)} 个")
         lines.append(f"当前音色：{self._voice_of(event) or '默认'}")
         lines.append(f"会话覆盖：{self.state.get_voice(umo) or '无'}")
+        lines.append(f"回复方式：{self._mode_label(event)}")
         lines.append(f"本分钟剩余次数：{self.limiter.remaining(umo)}")
         try:
             cached = len(list((self.data_dir / "cache").glob("*.wav")))
@@ -439,43 +546,100 @@ class VoiceSenderPlugin(Star):
         lines.append(f"缓存文件：{cached} 个")
         yield event.plain_result("\n".join(lines))
 
+    def _auto_voice_on(self, event: AstrMessageEvent) -> bool:
+        """这个会话现在到底发不发语音：会话设定优先，其次看全局开关。"""
+        mode = self.state.get_mode(self._umo(event))
+        if mode == MODE_VOICE:
+            return True
+        if mode == MODE_TEXT:
+            return False
+        return bool(self._cfg("auto_mode", True))
+
+    def _mode_label(self, event: AstrMessageEvent) -> str:
+        mode = self.state.get_mode(self._umo(event))
+        if mode == MODE_VOICE:
+            return "发语音（这个会话单独设的）"
+        if mode == MODE_TEXT:
+            return "发文字（这个会话单独设的）"
+        return "发语音（全局默认）" if self._cfg("auto_mode", True) else "发文字（全局默认）"
+
+    async def _impl_switch(self, event: AstrMessageEvent):
+        error = self._guard(event, limit=False)
+        if error:
+            yield event.plain_result(error)
+            return
+
+        _, arg = self._split_args(
+            ("语音开关", "vswitch", "语音模式", "vswitch"), event.message_str
+        )
+        umo = self._umo(event)
+        arg = (arg or "").strip().lower()
+
+        if not arg:  # 不带参数就一键切换
+            target = MODE_TEXT if self._auto_voice_on(event) else MODE_VOICE
+            self.state.set_mode(umo, target)
+            if target == MODE_VOICE:
+                yield event.plain_result("好，这个会话之后都发语音。想换回来再发一次 /语音开关。")
+            else:
+                yield event.plain_result("好，这个会话之后都发文字。想换回来再发一次 /语音开关。")
+            return
+
+        if arg in ("语音", "开", "打开", "on", "voice", "1", "是"):
+            target = MODE_VOICE
+        elif arg in ("文字", "关", "关闭", "off", "text", "0", "否"):
+            target = MODE_TEXT
+        elif arg in ("默认", "跟随", "取消", "auto", "reset", "default"):
+            target = ""
+        else:
+            yield event.plain_result(
+                "用法：/语音开关（来回切）｜/语音开关 语音｜/语音开关 文字｜/语音开关 默认"
+            )
+            return
+
+        self.state.set_mode(umo, target)
+        if target == MODE_VOICE:
+            yield event.plain_result("好，这个会话之后都发语音。")
+        elif target == MODE_TEXT:
+            yield event.plain_result("好，这个会话之后都发文字。")
+        else:
+            yield event.plain_result(f"好，这个会话改回跟全局走：{self._mode_label(event)}。")
+
     async def _impl_help(self, event: AstrMessageEvent):
         yield event.plain_result(HELP_TEXT)
 
     # ---------------------------------------------------------------- 指令
 
-    @filter.command("说")
-    @filter.command("vsay")
+    @filter.command("说", alias={"vsay"})
     async def say(self, event: AstrMessageEvent):
         async for result in self._impl_say(event):
             yield result
 
-    @filter.command("发语音")
-    @filter.command("vsend")
+    @filter.command("发语音", alias={"vsend"})
     async def send_voice(self, event: AstrMessageEvent):
         async for result in self._impl_send(event):
             yield result
 
-    @filter.command("音色列表")
-    @filter.command("vvoices")
+    @filter.command("音色列表", alias={"vvoices"})
     async def voices(self, event: AstrMessageEvent):
         async for result in self._impl_voices(event):
             yield result
 
-    @filter.command("设置音色")
-    @filter.command("vset")
+    @filter.command("设置音色", alias={"vset"})
     async def set_voice(self, event: AstrMessageEvent):
         async for result in self._impl_set_voice(event):
             yield result
 
-    @filter.command("语音配置")
-    @filter.command("vinfo")
+    @filter.command("语音开关", alias={"vswitch"})
+    async def switch_mode(self, event: AstrMessageEvent):
+        async for result in self._impl_switch(event):
+            yield result
+
+    @filter.command("语音配置", alias={"vinfo"})
     async def info(self, event: AstrMessageEvent):
         async for result in self._impl_info(event):
             yield result
 
-    @filter.command("语音帮助")
-    @filter.command("vhelp")
+    @filter.command("语音帮助", alias={"vhelp"})
     async def help(self, event: AstrMessageEvent):
         async for result in self._impl_help(event):
             yield result
